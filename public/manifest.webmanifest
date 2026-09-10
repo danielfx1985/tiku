@@ -1,0 +1,9 @@
+{
+  "name": "题库练习",
+  "short_name": "题库练习",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f6f3ec",
+  "theme_color": "#2d6a4f",
+  "lang": "zh-CN"
+}
