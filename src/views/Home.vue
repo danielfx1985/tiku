@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import { api, ApiError } from '../api'
 import { getToken, getUser, setAuth, clearAuth, type AuthUser } from '../auth'
 import { deleteBank, getHomeStats, listBanks } from '../db'
-import type { HomeStats, QuestionBank, QuestionType } from '../types'
+import {
+  examSummary,
+  EXAM_TYPE_ORDER,
+  loadSavedExamRules,
+  rulesToQuery,
+  saveExamRules,
+  validateExamRules,
+} from '../examConfig'
+import type { ExamRule, HomeStats, QuestionBank, QuestionType } from '../types'
 import { TYPE_LABEL } from '../types'
 
 const BATCH_OPTIONS = [20, 50, 100] as const
@@ -21,10 +29,15 @@ const stats = ref<HomeStats>({
   byType: { judge: 0, single: 0, multi: 0 },
 })
 const banks = ref<QuestionBank[]>([])
-const random = ref(false)
+const random = ref(true)
 const batchSize = ref<(typeof BATCH_OPTIONS)[number]>(50)
 const activeBankId = ref<string>('')
 const user = ref<AuthUser | null>(getUser())
+const examOpen = ref(false)
+const examRules = ref<ExamRule[]>(loadSavedExamRules())
+
+const examPreview = computed(() => examSummary(examRules.value))
+const availableByType = computed(() => stats.value.byType)
 
 async function refresh() {
   try {
@@ -61,7 +74,7 @@ function goPractice(query: Record<string, string>) {
       ...query,
       batch: String(batchSize.value),
       ...(activeBankId.value ? { bankId: activeBankId.value } : {}),
-      ...(random.value ? { random: '1' } : {}),
+      random: random.value ? '1' : '0',
     },
   })
 }
@@ -95,6 +108,44 @@ function startWrong() {
     return
   }
   goPractice({ wrong: '1' })
+}
+
+function openExamConfig() {
+  if (!stats.value.total) {
+    showToast('请先导入题库')
+    return
+  }
+  examRules.value = loadSavedExamRules()
+  examOpen.value = true
+}
+
+function setExamCount(type: QuestionType, raw: string) {
+  examRules.value = examRules.value.map((item) =>
+    item.type === type ? { ...item, count: raw === '' ? 0 : Number(raw) } : item,
+  )
+}
+
+function setExamScore(type: QuestionType, raw: string) {
+  examRules.value = examRules.value.map((item) =>
+    item.type === type ? { ...item, score: raw === '' ? 0 : Number(raw) } : item,
+  )
+}
+
+function startExam() {
+  const error = validateExamRules(examRules.value, availableByType.value)
+  if (error) {
+    showToast(error)
+    return
+  }
+  saveExamRules(examRules.value)
+  examOpen.value = false
+  router.push({
+    name: 'exam',
+    query: {
+      ...rulesToQuery(examRules.value),
+      ...(activeBankId.value ? { bankId: activeBankId.value } : {}),
+    },
+  })
 }
 
 async function removeBank(bank: QuestionBank) {
@@ -195,6 +246,10 @@ async function selectBank(id: string) {
           <button type="button" class="mode-btn" @click="startUnanswered('multi')">多选未做</button>
           <button type="button" class="mode-btn" @click="startReview()">全部复习</button>
         </div>
+        <button type="button" class="mode-btn exam" @click="openExamConfig">
+          生成模拟试卷
+          <small>整卷交卷计分，错题入错题本</small>
+        </button>
       </div>
 
       <div class="action-grid">
@@ -205,6 +260,40 @@ async function selectBank(id: string) {
         <button type="button" class="action-btn ghost" @click="router.push('/wrong')">错题库</button>
         <button type="button" class="action-btn primary" @click="router.push('/import')">导入题库</button>
       </div>
+
+      <van-popup v-model:show="examOpen" position="bottom" round>
+        <div class="exam-sheet">
+          <h3>模拟试卷</h3>
+          <p class="muted exam-preview">{{ examPreview }}</p>
+          <p class="muted">
+            可改题量和每题分值；当前范围：判断 {{ stats.byType.judge }} · 单选 {{ stats.byType.single }} · 多选
+            {{ stats.byType.multi }}
+          </p>
+          <div class="exam-row exam-head muted">
+            <span>题型</span>
+            <span>题量</span>
+            <span>每题分</span>
+          </div>
+          <div v-for="type in EXAM_TYPE_ORDER" :key="type" class="exam-row">
+            <span>{{ TYPE_LABEL[type] }}</span>
+            <van-field
+              :model-value="String(examRules.find((item) => item.type === type)?.count ?? 0)"
+              type="digit"
+              input-align="center"
+              placeholder="题量"
+              @update:model-value="(value) => setExamCount(type, value)"
+            />
+            <van-field
+              :model-value="String(examRules.find((item) => item.type === type)?.score ?? 0)"
+              type="number"
+              input-align="center"
+              placeholder="分值"
+              @update:model-value="(value) => setExamScore(type, value)"
+            />
+          </div>
+          <van-button class="exam-start" type="primary" block round @click="startExam">开始组卷</van-button>
+        </div>
+      </van-popup>
 
       <h2 class="section-title">题库{{ activeBankId ? '（已选题库，练习仅此套）' : '' }}</h2>
       <p class="muted bank-hint">管理员导入的题库全员可用；你自己导入的只自己能看见。</p>
@@ -330,10 +419,65 @@ async function selectBank(id: string) {
   min-height: 56px;
 }
 
-.mode-btn.primary small {
+.mode-btn.primary small,
+.mode-btn.exam small {
   font-weight: 500;
   opacity: 0.88;
   margin-top: 2px;
+}
+
+.mode-btn.exam {
+  width: 100%;
+  margin-top: 10px;
+  background: #fff;
+  border: 1px solid var(--primary);
+  color: var(--primary);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 56px;
+}
+
+.exam-sheet {
+  padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
+}
+
+.exam-sheet h3 {
+  margin: 0 0 8px;
+  font-size: 17px;
+}
+
+.exam-preview {
+  margin: 0 0 8px;
+  line-height: 1.5;
+}
+
+.exam-row {
+  display: grid;
+  grid-template-columns: 72px 1fr 1fr;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.exam-head {
+  font-size: 12px;
+  text-align: center;
+}
+
+.exam-head span:first-child,
+.exam-row > span:first-child {
+  text-align: left;
+}
+
+.exam-row :deep(.van-field) {
+  padding: 6px 8px;
+  background: #fbfaf6;
+  border-radius: 10px;
+}
+
+.exam-start {
+  margin-top: 16px;
 }
 
 .action-grid {

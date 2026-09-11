@@ -58,7 +58,7 @@ onMounted(async () => {
   }
   try {
     await start(filter, {
-      random: route.query.random === '1',
+      random: route.query.random !== '0',
       batchSize: parseBatchSize(),
     })
   } catch (error) {

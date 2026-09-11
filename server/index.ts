@@ -8,7 +8,7 @@ import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import jwt from 'jsonwebtoken'
 import { isCorrectAnswer } from '../src/parser/questionParser.ts'
-import type { ParsedQuestion, Question, QuestionType } from '../src/types.ts'
+import { TYPE_LABEL, type ExamRule, type ParsedQuestion, type Question, type QuestionType } from '../src/types.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT || 3000)
@@ -267,6 +267,53 @@ function loadPool(user: AuthUser, bankId?: string, type?: string): Question[] {
   return sortBySourceNo(rows.map(mapQuestion))
 }
 
+const EXAM_TYPE_ORDER: QuestionType[] = ['judge', 'single', 'multi']
+
+function shuffleList<T>(list: T[]): T[] {
+  const copy = [...list]
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[copy[i], copy[j]] = [copy[j], copy[i]]
+  }
+  return copy
+}
+
+function roundScore(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
+function parseExamRules(raw: unknown): { ok: true; rules: ExamRule[] } | { ok: false; error: string } {
+  if (!Array.isArray(raw) || !raw.length) {
+    return { ok: false, error: '请设置试卷题型' }
+  }
+  const seen = new Set<QuestionType>()
+  const rules: ExamRule[] = []
+  for (const item of raw) {
+    const type = item?.type as QuestionType
+    if (!EXAM_TYPE_ORDER.includes(type)) {
+      return { ok: false, error: '题型无效' }
+    }
+    if (seen.has(type)) {
+      return { ok: false, error: '题型重复' }
+    }
+    seen.add(type)
+    const count = Number(item?.count)
+    const score = Number(item?.score)
+    if (!Number.isInteger(count) || count < 0) {
+      return { ok: false, error: `${TYPE_LABEL[type]}数量须为大于等于 0 的整数` }
+    }
+    if (count > 0 && (!Number.isFinite(score) || score <= 0)) {
+      return { ok: false, error: `${TYPE_LABEL[type]}每题分值须大于 0` }
+    }
+    if (count > 0) rules.push({ type, count, score: roundScore(score) })
+  }
+  if (!rules.length) {
+    return { ok: false, error: '请至少抽取 1 题' }
+  }
+  rules.sort((a, b) => EXAM_TYPE_ORDER.indexOf(a.type) - EXAM_TYPE_ORDER.indexOf(b.type))
+  return { ok: true, rules }
+}
+
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '8mb' }))
@@ -497,6 +544,135 @@ app.get('/api/questions', auth, (req: AuthedRequest, res) => {
     questions = questions.filter((item) => !done.has(item.id))
   }
   res.json({ questions })
+})
+
+app.post('/api/exams/generate', auth, (req: AuthedRequest, res) => {
+  const parsed = parseExamRules(req.body?.rules)
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error })
+    return
+  }
+  const bankId = typeof req.body?.bankId === 'string' && req.body.bankId ? String(req.body.bankId) : undefined
+  const pool = loadPool(req.user!, bankId)
+  const byType: Record<QuestionType, Question[]> = { judge: [], single: [], multi: [] }
+  for (const question of pool) byType[question.type].push(question)
+
+  const questions: Question[] = []
+  for (const type of EXAM_TYPE_ORDER) {
+    const rule = parsed.rules.find((item) => item.type === type)
+    if (!rule) continue
+    if (byType[type].length < rule.count) {
+      res.status(400).json({
+        error: `${TYPE_LABEL[type]}仅 ${byType[type].length} 题，无法抽取 ${rule.count} 题`,
+      })
+      return
+    }
+    questions.push(...shuffleList(byType[type]).slice(0, rule.count))
+  }
+
+  res.json({
+    questions,
+    rules: parsed.rules,
+    totalCount: questions.length,
+    totalScore: roundScore(parsed.rules.reduce((sum, rule) => sum + rule.count * rule.score, 0)),
+  })
+})
+
+app.post('/api/exams/submit', auth, (req: AuthedRequest, res) => {
+  const parsed = parseExamRules(req.body?.rules)
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error })
+    return
+  }
+  const rawAnswers = Array.isArray(req.body?.answers) ? req.body.answers : []
+  if (!rawAnswers.length) {
+    res.status(400).json({ error: '没有可交卷的题目' })
+    return
+  }
+
+  const ruleByType = new Map(parsed.rules.map((rule) => [rule.type, rule]))
+  const seen = new Set<string>()
+  const details: {
+    questionId: string
+    type: QuestionType
+    correct: boolean
+    score: number
+    fullScore: number
+    userAnswer: string[]
+  }[] = []
+  const wrongs: { questionId: string; userAnswer: string[] }[] = []
+  const scoreByType: Record<QuestionType, number> = { judge: 0, single: 0, multi: 0 }
+  const fullByType: Record<QuestionType, number> = { judge: 0, single: 0, multi: 0 }
+
+  for (const item of rawAnswers) {
+    const questionId = String(item?.questionId || '')
+    if (!questionId || seen.has(questionId)) {
+      res.status(400).json({ error: '交卷题目无效' })
+      return
+    }
+    seen.add(questionId)
+    const userAnswer = Array.isArray(item?.userAnswer) ? item.userAnswer.map(String) : []
+    const row = stmts.getQuestion.get(questionId) as Record<string, unknown> | undefined
+    if (!row) {
+      res.status(400).json({ error: '题目不存在' })
+      return
+    }
+    if (
+      !canSeeBank(req.user!, {
+        importedBy: String(row.importedBy || ''),
+        isPublic: Number(row.isPublic ?? 0),
+      })
+    ) {
+      res.status(403).json({ error: '无权作答该题' })
+      return
+    }
+    const question = mapQuestion(row)
+    const rule = ruleByType.get(question.type)
+    if (!rule) {
+      res.status(400).json({ error: '题目与试卷规则不匹配' })
+      return
+    }
+    const fullScore = rule.score
+    const correct = userAnswer.length > 0 && isCorrectAnswer(question.answer, userAnswer)
+    const score = correct ? fullScore : 0
+    fullByType[question.type] = roundScore(fullByType[question.type] + fullScore)
+    scoreByType[question.type] = roundScore(scoreByType[question.type] + score)
+    details.push({
+      questionId,
+      type: question.type,
+      correct,
+      score,
+      fullScore,
+      userAnswer,
+    })
+    if (!correct) wrongs.push({ questionId, userAnswer })
+  }
+
+  const now = Date.now()
+  const userId = req.user!.id
+  runTransaction(() => {
+    for (const wrong of wrongs) {
+      const existing = stmts.getWrong.get(userId, wrong.questionId) as { wrongCount: number | bigint } | undefined
+      stmts.upsertWrong.run(
+        userId,
+        wrong.questionId,
+        Number(existing?.wrongCount ?? 0) + 1,
+        now,
+        JSON.stringify(wrong.userAnswer),
+      )
+    }
+  })
+
+  res.json({
+    items: details,
+    byType: {
+      judge: { score: scoreByType.judge, full: fullByType.judge },
+      single: { score: scoreByType.single, full: fullByType.single },
+      multi: { score: scoreByType.multi, full: fullByType.multi },
+    },
+    total: roundScore(scoreByType.judge + scoreByType.single + scoreByType.multi),
+    full: roundScore(fullByType.judge + fullByType.single + fullByType.multi),
+  })
 })
 
 app.post('/api/answers', auth, (req: AuthedRequest, res) => {

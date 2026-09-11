@@ -1,5 +1,15 @@
 import { api } from '../api'
-import type { HomeStats, ParsedQuestion, Question, QuestionBank, QuestionType, WrongRecord } from '../types'
+import type {
+  ExamPaper,
+  ExamResult,
+  ExamRule,
+  HomeStats,
+  ParsedQuestion,
+  Question,
+  QuestionBank,
+  QuestionType,
+  WrongRecord,
+} from '../types'
 
 export interface QuestionFilter {
   bankId?: string
@@ -45,6 +55,29 @@ export async function loadQuestions(filter: QuestionFilter): Promise<Question[]>
   const suffix = params.toString() ? `?${params.toString()}` : ''
   const data = await api<{ questions: Question[] }>(`/questions${suffix}`)
   return data.questions
+}
+
+export async function generateExam(bankId: string | undefined, rules: ExamRule[]): Promise<ExamPaper> {
+  return api<ExamPaper>('/exams/generate', {
+    method: 'POST',
+    body: JSON.stringify({
+      bankId,
+      rules: rules.filter((rule) => rule.count > 0),
+    }),
+  })
+}
+
+export async function submitExam(
+  rules: ExamRule[],
+  answers: { questionId: string; userAnswer: string[] }[],
+): Promise<ExamResult> {
+  return api<ExamResult>('/exams/submit', {
+    method: 'POST',
+    body: JSON.stringify({
+      rules: rules.filter((rule) => rule.count > 0),
+      answers,
+    }),
+  })
 }
 
 export async function recordAnswer(

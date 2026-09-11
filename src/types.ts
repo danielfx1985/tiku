@@ -81,3 +81,37 @@ export const TYPE_LABEL: Record<QuestionType, string> = {
   single: '单选题',
   multi: '多选题',
 }
+
+export interface ExamRule {
+  type: QuestionType
+  count: number
+  score: number
+}
+
+export interface ExamPaper {
+  questions: Question[]
+  rules: ExamRule[]
+  totalCount: number
+  totalScore: number
+}
+
+export interface ExamAnswerItem {
+  questionId: string
+  type: QuestionType
+  correct: boolean
+  score: number
+  fullScore: number
+  userAnswer: string[]
+}
+
+export interface ExamTypeScore {
+  score: number
+  full: number
+}
+
+export interface ExamResult {
+  items: ExamAnswerItem[]
+  byType: Record<QuestionType, ExamTypeScore>
+  total: number
+  full: number
+}

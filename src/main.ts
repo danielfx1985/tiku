@@ -5,6 +5,7 @@ import {
   Empty,
   Field,
   NavBar,
+  Popup,
   Progress,
   Switch,
   Tag,
@@ -21,6 +22,7 @@ app.use(Button)
 app.use(Empty)
 app.use(Field)
 app.use(NavBar)
+app.use(Popup)
 app.use(Progress)
 app.use(Switch)
 app.use(Tag)
