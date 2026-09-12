@@ -380,7 +380,7 @@ async function onSubmitPaper() {
   grid-template-columns: 1fr 1.3fr 1fr;
   gap: 8px;
   padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
-  background: rgba(244, 241, 234, 0.96);
+  background: var(--tea-bar);
   backdrop-filter: blur(8px);
 }
 

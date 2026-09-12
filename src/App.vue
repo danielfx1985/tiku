@@ -5,7 +5,7 @@ const themeVars = {
   primaryColor: '#2d6a4f',
   buttonPrimaryBackground: '#2d6a4f',
   buttonPrimaryBorderColor: '#2d6a4f',
-  navBarBackground: '#f4f1ea',
+  navBarBackground: 'rgba(243, 239, 228, 0.86)',
 }
 </script>
 

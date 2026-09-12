@@ -326,7 +326,9 @@ async function selectBank(id: string) {
 
 <style scoped>
 .hero {
-  background: linear-gradient(160deg, #1b4332, #2d6a4f 55%, #40916c);
+  background:
+    radial-gradient(80% 90% at 92% 0%, rgba(255, 255, 255, 0.2), transparent 52%),
+    linear-gradient(160deg, #1b4332, #2d6a4f 55%, #40916c);
   color: #fff;
 }
 
