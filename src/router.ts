@@ -1,11 +1,12 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import { isLoggedIn } from './auth'
+import { isAdmin, isLoggedIn } from './auth'
 import Home from './views/Home.vue'
 import ImportView from './views/Import.vue'
 import Login from './views/Login.vue'
 import Exam from './views/Exam.vue'
 import Practice from './views/Practice.vue'
 import Register from './views/Register.vue'
+import Settings from './views/Settings.vue'
 import WrongList from './views/WrongList.vue'
 
 export const router = createRouter({
@@ -18,6 +19,7 @@ export const router = createRouter({
     { path: '/practice', name: 'practice', component: Practice },
     { path: '/exam', name: 'exam', component: Exam },
     { path: '/wrong', name: 'wrong', component: WrongList },
+    { path: '/settings', name: 'settings', component: Settings, meta: { admin: true } },
   ],
 })
 
@@ -27,5 +29,6 @@ router.beforeEach((to) => {
     return true
   }
   if (!isLoggedIn()) return { name: 'login', query: { redirect: to.fullPath } }
+  if (to.meta.admin && !isAdmin()) return { name: 'home' }
   return true
 })

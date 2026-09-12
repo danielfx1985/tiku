@@ -180,6 +180,9 @@ async function selectBank(id: string) {
 <template>
   <div class="page">
     <van-nav-bar title="芮淋家茶习题库">
+      <template v-if="user?.role === 'admin'" #left>
+        <button type="button" class="logout" @click="router.push('/settings')">设置</button>
+      </template>
       <template #right>
         <button type="button" class="logout" @click="logout">退出</button>
       </template>

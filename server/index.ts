@@ -64,6 +64,10 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
   );
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `)
 
 function migrate() {
@@ -158,6 +162,11 @@ const stmts = {
   deleteWrongsByQuestions: db.prepare(
     `DELETE FROM wrongs WHERE question_id IN (SELECT id FROM questions WHERE bank_id = ?)`,
   ),
+  getSetting: db.prepare('SELECT value FROM settings WHERE key = ?'),
+  upsertSetting: db.prepare(
+    `INSERT INTO settings (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ),
 }
 
 function fingerprint(bankId: string, question: ParsedQuestion): string {
@@ -209,6 +218,147 @@ function runTransaction(fn: () => void) {
 
 function signToken(user: AuthUser): string {
   return jwt.sign(user, JWT_SECRET, { expiresIn: '30d' })
+}
+
+function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction) {
+  if (req.user?.role !== 'admin') {
+    res.status(403).json({ error: '仅管理员可操作' })
+    return
+  }
+  next()
+}
+
+const AI_SETTING_KEYS = {
+  enabled: 'ai.enabled',
+  baseUrl: 'ai.baseUrl',
+  apiKey: 'ai.apiKey',
+  model: 'ai.model',
+  systemPrompt: 'ai.systemPrompt',
+} as const
+
+const DEFAULT_AI_SYSTEM_PROMPT =
+  '你是一位严谨的题库讲解老师。根据题目、选项和正确答案，说明为什么要选这个答案，并补充必要的背景知识。不要编造题目中没有的选项。用简洁中文回答。'
+
+const AI_REQUEST_TIMEOUT_MS = 60_000
+
+function getSetting(key: string): string {
+  const row = stmts.getSetting.get(key) as { value: string } | undefined
+  return row?.value ?? ''
+}
+
+function setSetting(key: string, value: string) {
+  stmts.upsertSetting.run(key, value)
+}
+
+function maskApiKey(key: string): string {
+  const trimmed = key.trim()
+  if (!trimmed) return ''
+  if (trimmed.length <= 8) return '****'
+  return `${trimmed.slice(0, 3)}****${trimmed.slice(-4)}`
+}
+
+function readAiSettings() {
+  const apiKey = getSetting(AI_SETTING_KEYS.apiKey)
+  return {
+    enabled: getSetting(AI_SETTING_KEYS.enabled) === '1',
+    baseUrl: getSetting(AI_SETTING_KEYS.baseUrl),
+    model: getSetting(AI_SETTING_KEYS.model),
+    systemPrompt: getSetting(AI_SETTING_KEYS.systemPrompt) || DEFAULT_AI_SYSTEM_PROMPT,
+    apiKey,
+  }
+}
+
+function isAiReady(settings = readAiSettings()) {
+  return Boolean(settings.enabled && settings.baseUrl.trim() && settings.apiKey.trim() && settings.model.trim())
+}
+
+function publicAiSettings() {
+  const settings = readAiSettings()
+  return {
+    enabled: settings.enabled,
+    baseUrl: settings.baseUrl,
+    model: settings.model,
+    systemPrompt: settings.systemPrompt,
+    apiKeySet: Boolean(settings.apiKey),
+    apiKeyMasked: maskApiKey(settings.apiKey),
+  }
+}
+
+function chatCompletionsUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, '')
+  if (trimmed.endsWith('/chat/completions')) return trimmed
+  if (trimmed.endsWith('/v1')) return `${trimmed}/chat/completions`
+  return `${trimmed}/v1/chat/completions`
+}
+
+function buildExplainPrompt(question: Question): string {
+  const lines = [`题型：${TYPE_LABEL[question.type]}`, `题干：${question.stem}`]
+  if (question.options.length) {
+    lines.push('选项：')
+    for (const option of question.options) {
+      lines.push(`${option.label}、${option.text}`)
+    }
+  }
+  const answer = question.type === 'judge' ? question.answer[0] : question.answer.join('')
+  lines.push(`正确答案：${answer}`)
+  if (question.analysis) lines.push(`已有解析：${question.analysis}`)
+  lines.push('请说明为什么要选这个答案，并补充相关背景知识。')
+  return lines.join('\n')
+}
+
+class HttpError extends Error {
+  status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
+async function requestAiExplanation(question: Question): Promise<string> {
+  const settings = readAiSettings()
+  if (!isAiReady(settings)) {
+    throw new HttpError('管理员尚未配置 AI', 400)
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS)
+  try {
+    const response = await fetch(chatCompletionsUrl(settings.baseUrl), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${settings.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        temperature: 0.3,
+        messages: [
+          { role: 'system', content: settings.systemPrompt || DEFAULT_AI_SYSTEM_PROMPT },
+          { role: 'user', content: buildExplainPrompt(question) },
+        ],
+      }),
+      signal: controller.signal,
+    })
+    const data = (await response.json().catch(() => ({}))) as {
+      error?: { message?: string } | string
+      choices?: { message?: { content?: string } }[]
+    }
+    if (!response.ok) {
+      const message =
+        typeof data.error === 'string' ? data.error : data.error?.message || `AI 接口返回 ${response.status}`
+      throw new HttpError(message, 502)
+    }
+    const text = data.choices?.[0]?.message?.content?.trim()
+    if (!text) throw new HttpError('AI 未返回讲解内容', 502)
+    return text
+  } catch (error) {
+    if (error instanceof HttpError) throw error
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new HttpError('AI 请求超时，请稍后重试', 504)
+    }
+    throw new HttpError(error instanceof Error ? error.message : 'AI 讲解失败', 502)
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function auth(req: AuthedRequest, res: Response, next: NextFunction) {
@@ -750,6 +900,58 @@ app.get('/api/wrongs', auth, (req: AuthedRequest, res) => {
 app.delete('/api/wrongs/:questionId', auth, (req: AuthedRequest, res) => {
   stmts.deleteWrong.run(req.user!.id, String(req.params.questionId))
   res.json({ ok: true })
+})
+
+app.get('/api/settings/ai', auth, requireAdmin, (_req: AuthedRequest, res) => {
+  res.json(publicAiSettings())
+})
+
+app.put('/api/settings/ai', auth, requireAdmin, (req: AuthedRequest, res) => {
+  const enabled = Boolean(req.body?.enabled)
+  const baseUrl = String(req.body?.baseUrl || '').trim()
+  const model = String(req.body?.model || '').trim()
+  const systemPrompt = String(req.body?.systemPrompt || '').trim() || DEFAULT_AI_SYSTEM_PROMPT
+  const incomingKey = String(req.body?.apiKey || '').trim()
+  const apiKey = incomingKey || getSetting(AI_SETTING_KEYS.apiKey)
+  if (enabled && (!baseUrl || !model || !apiKey)) {
+    res.status(400).json({ error: '启用 AI 需要填写 Base URL、API Key 和模型名' })
+    return
+  }
+  setSetting(AI_SETTING_KEYS.enabled, enabled ? '1' : '0')
+  setSetting(AI_SETTING_KEYS.baseUrl, baseUrl)
+  setSetting(AI_SETTING_KEYS.model, model)
+  setSetting(AI_SETTING_KEYS.systemPrompt, systemPrompt)
+  if (incomingKey) setSetting(AI_SETTING_KEYS.apiKey, incomingKey)
+  res.json(publicAiSettings())
+})
+
+app.get('/api/ai/status', auth, (_req: AuthedRequest, res) => {
+  res.json({ enabled: isAiReady() })
+})
+
+app.post('/api/questions/:id/ai-explain', auth, async (req: AuthedRequest, res) => {
+  const questionId = String(req.params.id || '')
+  const row = stmts.getQuestion.get(questionId) as Record<string, unknown> | undefined
+  if (!row) {
+    res.status(404).json({ error: '题目不存在' })
+    return
+  }
+  if (
+    !canSeeBank(req.user!, {
+      importedBy: String(row.importedBy || ''),
+      isPublic: Number(row.isPublic ?? 0),
+    })
+  ) {
+    res.status(403).json({ error: '无权查看该题' })
+    return
+  }
+  try {
+    const explanation = await requestAiExplanation(mapQuestion(row))
+    res.json({ explanation })
+  } catch (error) {
+    const status = error instanceof HttpError ? error.status : 502
+    res.status(status).json({ error: error instanceof Error ? error.message : 'AI 讲解失败' })
+  }
 })
 
 app.listen(PORT, '0.0.0.0', () => {

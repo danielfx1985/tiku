@@ -244,6 +244,7 @@ async function onSubmitPaper() {
           :selected="selected"
           :submitted="submitted"
           :is-correct="isCorrect"
+          :allow-ai="submitted"
           @toggle="toggleOption"
         />
       </div>

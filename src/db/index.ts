@@ -101,6 +101,42 @@ export async function removeWrong(questionId: string): Promise<void> {
   await api(`/wrongs/${encodeURIComponent(questionId)}`, { method: 'DELETE' })
 }
 
+export interface AiSettings {
+  enabled: boolean
+  baseUrl: string
+  model: string
+  systemPrompt: string
+  apiKeySet: boolean
+  apiKeyMasked: string
+}
+
+export async function getAiStatus(): Promise<{ enabled: boolean }> {
+  return api<{ enabled: boolean }>('/ai/status')
+}
+
+export async function explainQuestion(questionId: string): Promise<{ explanation: string }> {
+  return api<{ explanation: string }>(`/questions/${encodeURIComponent(questionId)}/ai-explain`, {
+    method: 'POST',
+  })
+}
+
+export async function getAiSettings(): Promise<AiSettings> {
+  return api<AiSettings>('/settings/ai')
+}
+
+export async function saveAiSettings(payload: {
+  enabled: boolean
+  baseUrl: string
+  model: string
+  systemPrompt: string
+  apiKey?: string
+}): Promise<AiSettings> {
+  return api<AiSettings>('/settings/ai', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function shuffle<T>(list: T[]): T[] {
   const copy = [...list]
   for (let i = copy.length - 1; i > 0; i -= 1) {

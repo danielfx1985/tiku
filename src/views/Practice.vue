@@ -127,6 +127,7 @@ async function onContinue() {
           :selected="selected"
           :submitted="submitted"
           :is-correct="isCorrect"
+          allow-ai
           @toggle="toggleOption"
         />
         <van-button

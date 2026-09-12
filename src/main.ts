@@ -4,6 +4,7 @@ import {
   ConfigProvider,
   Empty,
   Field,
+  Loading,
   NavBar,
   Popup,
   Progress,
@@ -21,6 +22,7 @@ app.use(ConfigProvider)
 app.use(Button)
 app.use(Empty)
 app.use(Field)
+app.use(Loading)
 app.use(NavBar)
 app.use(Popup)
 app.use(Progress)
