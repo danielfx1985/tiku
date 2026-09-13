@@ -405,6 +405,11 @@ async function selectBank(id: string) {
 .mode-btn,
 .action-btn,
 .link-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
   border: 0;
   background: #f3efe4;
   color: var(--ink);
