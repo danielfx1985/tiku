@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
 import QuestionCard from '../components/QuestionCard.vue'
 import { ApiError } from '../api'
-import { generateExam, submitExam } from '../db'
+import { generateExam, getExam, submitExam } from '../db'
 import { examSummary, formatScore, rulesFromQuery, validateExamRules } from '../examConfig'
 import type { ExamResult, ExamRule, Question } from '../types'
 import { TYPE_LABEL } from '../types'
@@ -43,6 +43,7 @@ const answeredCount = computed(
   () => questions.value.filter((item) => (answers.value[item.id] || []).length > 0).length,
 )
 const unansweredCount = computed(() => Math.max(0, total.value - answeredCount.value))
+const canSubmit = computed(() => !submitted.value && total.value > 0 && unansweredCount.value === 0)
 const resultRows = computed(() => {
   if (!result.value) return []
   return rules.value.map((rule) => ({
@@ -76,6 +77,25 @@ const canNext = computed(() => navIndices.value.some((item) => item > index.valu
 const paperTitle = computed(() => (submitted.value ? '试卷回看' : '模拟试卷'))
 
 onMounted(async () => {
+  const examId = typeof route.query.id === 'string' ? route.query.id : ''
+  if (examId) {
+    try {
+      const record = await getExam(examId)
+      questions.value = record.questions
+      rules.value = record.rules
+      result.value = record.result
+      answers.value = Object.fromEntries(
+        record.result.items.map((item) => [item.questionId, item.userAnswer]),
+      )
+    } catch (error) {
+      showToast(error instanceof ApiError ? error.message : '试卷加载失败')
+      router.replace({ name: 'exams' })
+    } finally {
+      loading.value = false
+    }
+    return
+  }
+
   const parsed = rulesFromQuery(route.query as Record<string, unknown>)
   const invalid = validateExamRules(parsed, { judge: Number.MAX_SAFE_INTEGER, single: Number.MAX_SAFE_INTEGER, multi: Number.MAX_SAFE_INTEGER })
   if (invalid) {
@@ -127,6 +147,10 @@ async function goTo(questionIndex: number) {
   document.querySelector('.q-wrap')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
+function goHome() {
+  router.replace({ name: 'home' })
+}
+
 function setWrongOnly(value: boolean) {
   if (value && wrongCount.value === 0) {
     showToast('没有错题')
@@ -140,32 +164,27 @@ function setWrongOnly(value: boolean) {
 }
 
 async function onSubmitPaper() {
-  if (submitted.value || submitting.value || !total.value) return
+  if (!canSubmit.value || submitting.value) return
   try {
-    if (unansweredCount.value > 0) {
-      await showConfirmDialog({
-        title: '交卷确认',
-        message: `还有 ${unansweredCount.value} 题未答，未答计 0 分。确定交卷吗？`,
-      })
-    } else {
-      await showConfirmDialog({
-        title: '交卷确认',
-        message: '确定交卷吗？错题将收入错题本，不计入练习进度。',
-      })
-    }
+    await showConfirmDialog({
+      title: '交卷确认',
+      message: '确定交卷吗？错题将收入错题本，不计入练习进度。',
+    })
   } catch {
     return
   }
   submitting.value = true
   try {
-    result.value = await submitExam(
+    const saved = await submitExam(
       rules.value,
       questions.value.map((question) => ({
         questionId: question.id,
         userAnswer: answers.value[question.id] ?? [],
       })),
     )
-    showToast('已交卷')
+    result.value = saved
+    showToast('已交卷，已保存到模拟记录')
+    await router.replace({ name: 'exam', query: { id: saved.id } })
     await nextTick()
     window.scrollTo({ top: 0, behavior: 'smooth' })
   } catch (error) {
@@ -184,7 +203,7 @@ async function onSubmitPaper() {
       </template>
     </van-nav-bar>
 
-    <div v-if="loading" class="page-body muted">组卷中…</div>
+    <div v-if="loading" class="page-body muted">{{ typeof route.query.id === 'string' ? '加载中…' : '组卷中…' }}</div>
     <van-empty v-else-if="empty" description="没有可组成的试卷" />
 
     <template v-else-if="current">
@@ -249,16 +268,19 @@ async function onSubmitPaper() {
         />
       </div>
 
-      <div class="exam-bar" :class="{ review: submitted }">
+      <div class="exam-bar" :class="{ review: !canSubmit && !submitted }">
         <van-button round :disabled="!canPrev" @click="prev()">上一题</van-button>
         <van-button
-          v-if="!submitted"
+          v-if="canSubmit"
           round
           type="primary"
           :loading="submitting"
           @click="onSubmitPaper"
         >
           交卷
+        </van-button>
+        <van-button v-else-if="submitted" round type="primary" @click="goHome">
+          返回首页
         </van-button>
         <van-button round :disabled="!canNext" @click="next()">下一题</van-button>
       </div>

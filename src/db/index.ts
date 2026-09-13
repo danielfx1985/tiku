@@ -1,6 +1,8 @@
 import { api } from '../api'
 import type {
   ExamPaper,
+  ExamRecordDetail,
+  ExamRecordSummary,
   ExamResult,
   ExamRule,
   HomeStats,
@@ -78,6 +80,19 @@ export async function submitExam(
       answers,
     }),
   })
+}
+
+export async function listExams(): Promise<ExamRecordSummary[]> {
+  const data = await api<{ exams: ExamRecordSummary[] }>('/exams')
+  return data.exams
+}
+
+export async function getExam(id: string): Promise<ExamRecordDetail> {
+  return api<ExamRecordDetail>(`/exams/${encodeURIComponent(id)}`)
+}
+
+export async function removeExam(id: string): Promise<void> {
+  await api(`/exams/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 export async function recordAnswer(

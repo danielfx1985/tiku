@@ -110,8 +110,26 @@ export interface ExamTypeScore {
 }
 
 export interface ExamResult {
+  id: string
   items: ExamAnswerItem[]
   byType: Record<QuestionType, ExamTypeScore>
   total: number
   full: number
+}
+
+export interface ExamRecordSummary {
+  id: string
+  submittedAt: number
+  total: number
+  full: number
+  totalCount: number
+  correctCount: number
+}
+
+export interface ExamRecordDetail {
+  id: string
+  submittedAt: number
+  rules: ExamRule[]
+  questions: Question[]
+  result: ExamResult
 }

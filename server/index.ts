@@ -84,6 +84,30 @@ function migrate() {
     WHERE id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1)
       AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'admin')
   `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS exam_records (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      bank_id TEXT,
+      rules_json TEXT NOT NULL,
+      total REAL NOT NULL,
+      full REAL NOT NULL,
+      submitted_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS exam_record_items (
+      exam_id TEXT NOT NULL,
+      question_id TEXT NOT NULL,
+      sort_index INTEGER NOT NULL,
+      user_answer_json TEXT NOT NULL,
+      correct INTEGER NOT NULL,
+      score REAL NOT NULL,
+      full_score REAL NOT NULL,
+      PRIMARY KEY (exam_id, question_id),
+      FOREIGN KEY (exam_id) REFERENCES exam_records(id) ON DELETE CASCADE,
+      FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
+    );
+  `)
 }
 
 migrate()
@@ -162,6 +186,41 @@ const stmts = {
   deleteWrongsByQuestions: db.prepare(
     `DELETE FROM wrongs WHERE question_id IN (SELECT id FROM questions WHERE bank_id = ?)`,
   ),
+  insertExamRecord: db.prepare(
+    `INSERT INTO exam_records (id, user_id, bank_id, rules_json, total, full, submitted_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ),
+  insertExamItem: db.prepare(
+    `INSERT INTO exam_record_items (exam_id, question_id, sort_index, user_answer_json, correct, score, full_score)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ),
+  listExamRecords: db.prepare(
+    `SELECT e.id, e.submitted_at AS submittedAt, e.total, e.full,
+            COUNT(i.question_id) AS totalCount,
+            COALESCE(SUM(CASE WHEN i.correct = 1 THEN 1 ELSE 0 END), 0) AS correctCount
+     FROM exam_records e
+     LEFT JOIN exam_record_items i ON i.exam_id = e.id
+     WHERE e.user_id = ?
+     GROUP BY e.id
+     ORDER BY e.submitted_at DESC`,
+  ),
+  getExamRecord: db.prepare(
+    `SELECT id, user_id AS userId, bank_id AS bankId, rules_json AS rulesJson,
+            total, full, submitted_at AS submittedAt
+     FROM exam_records WHERE id = ? AND user_id = ?`,
+  ),
+  listExamItems: db.prepare(
+    `SELECT question_id AS questionId, sort_index AS sortIndex, user_answer_json AS userAnswerJson,
+            correct, score, full_score AS fullScore
+     FROM exam_record_items WHERE exam_id = ? ORDER BY sort_index ASC`,
+  ),
+  deleteExamRecordsByBank: db.prepare(
+    `DELETE FROM exam_records WHERE bank_id = ? OR id IN (
+       SELECT DISTINCT exam_id FROM exam_record_items
+       WHERE question_id IN (SELECT id FROM questions WHERE bank_id = ?)
+     )`,
+  ),
+  deleteExamRecord: db.prepare('DELETE FROM exam_records WHERE id = ? AND user_id = ?'),
   getSetting: db.prepare('SELECT value FROM settings WHERE key = ?'),
   upsertSetting: db.prepare(
     `INSERT INTO settings (key, value) VALUES (?, ?)
@@ -624,6 +683,7 @@ app.delete('/api/banks/:id', auth, (req: AuthedRequest, res) => {
     return
   }
   runTransaction(() => {
+    stmts.deleteExamRecordsByBank.run(bank.id, bank.id)
     stmts.deleteProgressByQuestions.run(bank.id)
     stmts.deleteWrongsByQuestions.run(bank.id)
     stmts.deleteQuestionsByBank.run(bank.id)
@@ -751,6 +811,7 @@ app.post('/api/exams/submit', auth, (req: AuthedRequest, res) => {
     userAnswer: string[]
   }[] = []
   const wrongs: { questionId: string; userAnswer: string[] }[] = []
+  const bankIds = new Set<string>()
   const scoreByType: Record<QuestionType, number> = { judge: 0, single: 0, multi: 0 }
   const fullByType: Record<QuestionType, number> = { judge: 0, single: 0, multi: 0 }
 
@@ -777,6 +838,7 @@ app.post('/api/exams/submit', auth, (req: AuthedRequest, res) => {
       return
     }
     const question = mapQuestion(row)
+    bankIds.add(question.bankId)
     const rule = ruleByType.get(question.type)
     if (!rule) {
       res.status(400).json({ error: '题目与试卷规则不匹配' })
@@ -800,6 +862,10 @@ app.post('/api/exams/submit', auth, (req: AuthedRequest, res) => {
 
   const now = Date.now()
   const userId = req.user!.id
+  const examId = randomUUID()
+  const total = roundScore(scoreByType.judge + scoreByType.single + scoreByType.multi)
+  const full = roundScore(fullByType.judge + fullByType.single + fullByType.multi)
+  const examBankId = bankIds.size === 1 ? [...bankIds][0] : null
   runTransaction(() => {
     for (const wrong of wrongs) {
       const existing = stmts.getWrong.get(userId, wrong.questionId) as { wrongCount: number | bigint } | undefined
@@ -811,18 +877,177 @@ app.post('/api/exams/submit', auth, (req: AuthedRequest, res) => {
         JSON.stringify(wrong.userAnswer),
       )
     }
+    stmts.insertExamRecord.run(
+      examId,
+      userId,
+      examBankId,
+      JSON.stringify(parsed.rules),
+      total,
+      full,
+      now,
+    )
+    details.forEach((item, sortIndex) => {
+      stmts.insertExamItem.run(
+        examId,
+        item.questionId,
+        sortIndex,
+        JSON.stringify(item.userAnswer),
+        item.correct ? 1 : 0,
+        item.score,
+        item.fullScore,
+      )
+    })
   })
 
   res.json({
+    id: examId,
     items: details,
     byType: {
       judge: { score: scoreByType.judge, full: fullByType.judge },
       single: { score: scoreByType.single, full: fullByType.single },
       multi: { score: scoreByType.multi, full: fullByType.multi },
     },
-    total: roundScore(scoreByType.judge + scoreByType.single + scoreByType.multi),
-    full: roundScore(fullByType.judge + fullByType.single + fullByType.multi),
+    total,
+    full,
   })
+})
+
+app.get('/api/exams', auth, (req: AuthedRequest, res) => {
+  const rows = stmts.listExamRecords.all(req.user!.id) as {
+    id: string
+    submittedAt: number | bigint
+    total: number
+    full: number
+    totalCount: number | bigint
+    correctCount: number | bigint
+  }[]
+  res.json({
+    exams: rows.map((row) => ({
+      id: row.id,
+      submittedAt: Number(row.submittedAt),
+      total: Number(row.total),
+      full: Number(row.full),
+      totalCount: Number(row.totalCount),
+      correctCount: Number(row.correctCount),
+    })),
+  })
+})
+
+app.get('/api/exams/:id', auth, (req: AuthedRequest, res) => {
+  const examId = String(req.params.id || '')
+  const record = stmts.getExamRecord.get(examId, req.user!.id) as
+    | {
+        id: string
+        rulesJson: string
+        total: number
+        full: number
+        submittedAt: number | bigint
+      }
+    | undefined
+  if (!record) {
+    res.status(404).json({ error: '试卷不存在' })
+    return
+  }
+
+  let rules: ExamRule[]
+  try {
+    const parsed = parseExamRules(JSON.parse(record.rulesJson))
+    if (!parsed.ok) {
+      res.status(500).json({ error: '试卷数据损坏' })
+      return
+    }
+    rules = parsed.rules
+  } catch {
+    res.status(500).json({ error: '试卷数据损坏' })
+    return
+  }
+
+  const itemRows = stmts.listExamItems.all(examId) as {
+    questionId: string
+    sortIndex: number | bigint
+    userAnswerJson: string
+    correct: number | bigint
+    score: number
+    fullScore: number
+  }[]
+  const questions: Question[] = []
+  const details: {
+    questionId: string
+    type: QuestionType
+    correct: boolean
+    score: number
+    fullScore: number
+    userAnswer: string[]
+  }[] = []
+  const scoreByType: Record<QuestionType, number> = { judge: 0, single: 0, multi: 0 }
+  const fullByType: Record<QuestionType, number> = { judge: 0, single: 0, multi: 0 }
+
+  for (const item of itemRows) {
+    const row = stmts.getQuestion.get(item.questionId) as Record<string, unknown> | undefined
+    if (!row) {
+      res.status(404).json({ error: '试卷题目已失效' })
+      return
+    }
+    if (
+      !canSeeBank(req.user!, {
+        importedBy: String(row.importedBy || ''),
+        isPublic: Number(row.isPublic ?? 0),
+      })
+    ) {
+      res.status(404).json({ error: '试卷不存在' })
+      return
+    }
+    const question = mapQuestion(row)
+    let userAnswer: string[]
+    try {
+      userAnswer = JSON.parse(item.userAnswerJson)
+      if (!Array.isArray(userAnswer)) userAnswer = []
+    } catch {
+      userAnswer = []
+    }
+    const correct = Number(item.correct) === 1
+    const score = Number(item.score)
+    const fullScore = Number(item.fullScore)
+    questions.push(question)
+    details.push({
+      questionId: question.id,
+      type: question.type,
+      correct,
+      score,
+      fullScore,
+      userAnswer: userAnswer.map(String),
+    })
+    scoreByType[question.type] = roundScore(scoreByType[question.type] + score)
+    fullByType[question.type] = roundScore(fullByType[question.type] + fullScore)
+  }
+
+  res.json({
+    id: record.id,
+    submittedAt: Number(record.submittedAt),
+    rules,
+    questions,
+    result: {
+      id: record.id,
+      items: details,
+      byType: {
+        judge: { score: scoreByType.judge, full: fullByType.judge },
+        single: { score: scoreByType.single, full: fullByType.single },
+        multi: { score: scoreByType.multi, full: fullByType.multi },
+      },
+      total: Number(record.total),
+      full: Number(record.full),
+    },
+  })
+})
+
+app.delete('/api/exams/:id', auth, (req: AuthedRequest, res) => {
+  const examId = String(req.params.id || '')
+  const result = stmts.deleteExamRecord.run(examId, req.user!.id)
+  if (!result.changes) {
+    res.status(404).json({ error: '试卷不存在' })
+    return
+  }
+  res.json({ ok: true })
 })
 
 app.post('/api/answers', auth, (req: AuthedRequest, res) => {

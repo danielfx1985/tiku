@@ -249,10 +249,10 @@ async function selectBank(id: string) {
           <button type="button" class="mode-btn" @click="startUnanswered('multi')">多选未做</button>
           <button type="button" class="mode-btn" @click="startReview()">全部复习</button>
         </div>
-        <button type="button" class="mode-btn exam" @click="openExamConfig">
-          生成模拟试卷
-          <small>整卷交卷计分，错题入错题本</small>
-        </button>
+        <div class="exam-entry">
+          <button type="button" class="mode-btn" @click="openExamConfig">生成模拟试卷</button>
+          <button type="button" class="mode-btn" @click="router.push({ name: 'exams' })">模拟记录</button>
+        </div>
       </div>
 
       <div class="action-grid">
@@ -424,23 +424,17 @@ async function selectBank(id: string) {
   min-height: 56px;
 }
 
-.mode-btn.primary small,
-.mode-btn.exam small {
+.mode-btn.primary small {
   font-weight: 500;
   opacity: 0.88;
   margin-top: 2px;
 }
 
-.mode-btn.exam {
-  width: 100%;
+.exam-entry {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
   margin-top: 10px;
-  background: #fff;
-  border: 1px solid var(--primary);
-  color: var(--primary);
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  min-height: 56px;
 }
 
 .exam-sheet {

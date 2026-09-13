@@ -4,6 +4,7 @@ import Home from './views/Home.vue'
 import ImportView from './views/Import.vue'
 import Login from './views/Login.vue'
 import Exam from './views/Exam.vue'
+import ExamList from './views/ExamList.vue'
 import Practice from './views/Practice.vue'
 import Register from './views/Register.vue'
 import Settings from './views/Settings.vue'
@@ -17,6 +18,7 @@ export const router = createRouter({
     { path: '/', name: 'home', component: Home },
     { path: '/import', name: 'import', component: ImportView },
     { path: '/practice', name: 'practice', component: Practice },
+    { path: '/exams', name: 'exams', component: ExamList },
     { path: '/exam', name: 'exam', component: Exam },
     { path: '/wrong', name: 'wrong', component: WrongList },
     { path: '/settings', name: 'settings', component: Settings, meta: { admin: true } },
