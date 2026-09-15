@@ -6,7 +6,6 @@ import QuestionCard from '../components/QuestionCard.vue'
 import { ApiError } from '../api'
 import { useQuiz } from '../composables/useQuiz'
 import type { QuestionFilter } from '../db'
-import type { QuestionType } from '../types'
 import { TYPE_LABEL } from '../types'
 
 const route = useRoute()
@@ -37,11 +36,23 @@ const {
   next,
 } = useQuiz()
 
+const practiceType = computed(() => {
+  const type = route.query.type
+  return type === 'judge' || type === 'single' || type === 'multi' ? type : undefined
+})
+
 const title = computed(() => {
-  if (route.query.wrong === '1') return '错题练习'
-  if (route.query.unanswered === '1') return '未做练习'
-  const type = route.query.type as QuestionType | undefined
-  return type ? TYPE_LABEL[type] : '练习'
+  const typeText = practiceType.value ? TYPE_LABEL[practiceType.value] : ''
+  if (route.query.wrong === '1') return typeText ? `${typeText}错题` : '错题练习'
+  if (route.query.unanswered === '1') return typeText ? `${typeText}未做` : '未做练习'
+  return typeText || '练习'
+})
+
+const emptyText = computed(() => {
+  const typeText = practiceType.value ? TYPE_LABEL[practiceType.value] : ''
+  if (unansweredMode.value) return typeText ? `没有未做的${typeText}` : '没有未做题目'
+  if (wrongPractice.value) return typeText ? `暂无${typeText}错题` : '没有可练习的错题'
+  return typeText ? `没有可练习的${typeText}` : '没有可练习的题目'
 })
 
 function parseBatchSize(): number {
@@ -52,7 +63,7 @@ function parseBatchSize(): number {
 onMounted(async () => {
   const filter: QuestionFilter = {
     bankId: typeof route.query.bankId === 'string' ? route.query.bankId : undefined,
-    type: typeof route.query.type === 'string' ? (route.query.type as QuestionType) : undefined,
+    type: practiceType.value,
     wrongOnly: route.query.wrong === '1',
     unansweredOnly: route.query.unanswered === '1',
   }
@@ -109,7 +120,7 @@ async function onContinue() {
     </van-nav-bar>
 
     <div v-if="loading" class="page-body muted">加载中…</div>
-    <van-empty v-else-if="empty" :description="unansweredMode ? '没有未做题目' : '没有可练习的题目'" />
+    <van-empty v-else-if="empty" :description="emptyText" />
 
     <template v-else-if="current">
       <div class="page-body">
